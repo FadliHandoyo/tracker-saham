@@ -34,7 +34,15 @@ def load_data():
     records = worksheet.get_all_records()
     if not records:
         return pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Terakhir Update"])
-    return pd.DataFrame(records)
+    
+    df = pd.DataFrame(records)
+    
+    # Memaksa format kolom angka agar konsisten dan mencegah TypeError
+    df["Avg Price"] = pd.to_numeric(df["Avg Price"], errors='coerce').fillna(0).astype(float)
+    df["Lot"] = pd.to_numeric(df["Lot"], errors='coerce').fillna(0).astype(int)
+    df["Dividen/Lembar"] = pd.to_numeric(df["Dividen/Lembar"], errors='coerce').fillna(0).astype(float)
+    
+    return df
 
 def save_data(df):
     worksheet.clear()
