@@ -9,7 +9,6 @@ import pytz
 st.set_page_config(page_title="Tracker Saham Otomatis", layout="wide")
 st.title("📊 Portofolio Saham Live")
 
-# Zona waktu Indonesia Barat (WIB)
 tz_wib = pytz.timezone('Asia/Jakarta')
 list_bulan = ["-", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
 
@@ -34,12 +33,19 @@ except Exception as e:
 def load_data():
     records = worksheet.get_all_records()
     if not records:
-        return pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Bulan Dividen", "Tahun Dividen", "Terakhir Update"])
+        return pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Bulan Dividen", "Tahun Dividen", "Total Dividen Cair", "Terakhir Update"])
     
     df = pd.DataFrame(records)
+    
+    # Pengaman jika kolom baru belum terbaca sempurna
+    if "Total Dividen Cair" not in df.columns:
+        df["Total Dividen Cair"] = 0.0
+        
     df["Avg Price"] = pd.to_numeric(df["Avg Price"], errors='coerce').fillna(0).astype(float)
     df["Lot"] = pd.to_numeric(df["Lot"], errors='coerce').fillna(0).astype(int)
     df["Dividen/Lembar"] = pd.to_numeric(df["Dividen/Lembar"], errors='coerce').fillna(0).astype(float)
+    df["Total Dividen Cair"] = pd.to_numeric(df["Total Dividen Cair"], errors='coerce').fillna(0).astype(float)
+    
     df["Bulan Dividen"] = df["Bulan Dividen"].astype(str).replace("", "-").replace("0", "-")
     df["Tahun Dividen"] = df["Tahun Dividen"].astype(str).replace("", "-").replace("0", "-")
     return df
@@ -63,10 +69,13 @@ if menu == "➕ Tambah Baru":
     avg_price = st.sidebar.number_input("Harga Rata-rata (Avg Price) Rp", min_value=0.0, step=50.0)
     lots = st.sidebar.number_input("Jumlah Lot", min_value=0, step=1)
     
-    st.sidebar.markdown("**Info Dividen (Isi 0 jika belum ada)**")
+    st.sidebar.markdown("**Info Dividen Mendatang**")
     div = st.sidebar.number_input("Dividen per Lembar (Rp)", min_value=0.0, step=10.0)
     div_month = st.sidebar.selectbox("Bulan Pembagian", list_bulan)
     div_year = st.sidebar.text_input("Tahun Pembagian (contoh: 2026)", value="-")
+    
+    st.sidebar.markdown("**Riwayat Dividen Masa Lalu**")
+    tot_cair = st.sidebar.number_input("Total Dividen Sudah Cair (Rp)", min_value=0.0, step=1000.0)
 
     if st.sidebar.button("Simpan Saham Baru"):
         if ticker:
@@ -81,6 +90,7 @@ if menu == "➕ Tambah Baru":
                     "Dividen/Lembar": div, 
                     "Bulan Dividen": div_month,
                     "Tahun Dividen": div_year,
+                    "Total Dividen Cair": tot_cair,
                     "Terakhir Update": waktu_sekarang
                 }
                 df_porto = pd.concat([df_porto, pd.DataFrame([new_data])], ignore_index=True)
@@ -97,13 +107,15 @@ elif menu == "✏️ Edit Saham":
         new_avg = st.sidebar.number_input("Update Avg Price (Rp)", value=float(current_data["Avg Price"]), step=50.0)
         new_lot = st.sidebar.number_input("Update Jumlah Lot", value=int(current_data["Lot"]), step=1)
         
-        st.sidebar.markdown("**Update Info Dividen**")
+        st.sidebar.markdown("**Update Dividen Mendatang**")
         new_div = st.sidebar.number_input("Update Dividen (Rp)", value=float(current_data["Dividen/Lembar"]), step=10.0)
-        
         old_month = str(current_data["Bulan Dividen"])
         idx_month = list_bulan.index(old_month) if old_month in list_bulan else 0
         new_month = st.sidebar.selectbox("Update Bulan Pembagian", list_bulan, index=idx_month)
         new_year = st.sidebar.text_input("Update Tahun Pembagian", value=str(current_data["Tahun Dividen"]))
+        
+        st.sidebar.markdown("**Update Riwayat Dividen**")
+        new_tot_cair = st.sidebar.number_input("Akumulasi Dividen Sudah Cair (Rp)", value=float(current_data.get("Total Dividen Cair", 0.0)), step=1000.0)
         
         if st.sidebar.button("Update Data"):
             waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
@@ -114,6 +126,7 @@ elif menu == "✏️ Edit Saham":
             df_porto.at[idx, "Dividen/Lembar"] = new_div
             df_porto.at[idx, "Bulan Dividen"] = new_month
             df_porto.at[idx, "Tahun Dividen"] = new_year
+            df_porto.at[idx, "Total Dividen Cair"] = new_tot_cair
             df_porto.at[idx, "Terakhir Update"] = waktu_sekarang
             
             save_data(df_porto)
@@ -141,7 +154,8 @@ if not df_porto.empty:
     results = []
     total_modal_all = 0
     total_value_all = 0
-    total_div_all = 0
+    total_div_potensi_all = 0
+    total_div_cair_all = 0
     
     for index, row in df_porto.iterrows():
         tkr = row["Kode"]
@@ -150,6 +164,7 @@ if not df_porto.empty:
         dps = row["Dividen/Lembar"]
         b_div = row["Bulan Dividen"]
         t_div = row["Tahun Dividen"]
+        tot_cair_saham = row.get("Total Dividen Cair", 0.0)
         terakhir_update = row.get("Terakhir Update", "-")
         
         try:
@@ -161,13 +176,13 @@ if not df_porto.empty:
             nilai_sekarang = live_price * lembar
             gain = nilai_sekarang - modal
             gain_pct = (gain / modal * 100) if modal > 0 else 0
-            tot_div = dps * lembar
+            tot_div_potensi = dps * lembar
             
             total_modal_all += modal
             total_value_all += nilai_sekarang
-            total_div_all += tot_div
+            total_div_potensi_all += tot_div_potensi
+            total_div_cair_all += tot_cair_saham
             
-            # Penggabungan bulan dan tahun untuk kolom jadwal
             jadwal_div = f"{b_div} {t_div}" if b_div != "-" and t_div != "-" else "-"
             
             results.append({
@@ -178,8 +193,8 @@ if not df_porto.empty:
                 "Modal": f"Rp {modal:,.0f}",
                 "Nilai Saat Ini": f"Rp {nilai_sekarang:,.0f}",
                 "Capital Gain": f"Rp {gain:,.0f} ({gain_pct:.2f}%)",
-                "Potensi Dividen": f"Rp {tot_div:,.0f}",
-                "Jadwal Dividen": jadwal_div,
+                "Riwayat Dividen Cair": f"Rp {tot_cair_saham:,.0f}",
+                "Potensi Dividen (Jadwal)": f"Rp {tot_div_potensi:,.0f} ({jadwal_div})",
                 "Terakhir Update": terakhir_update
             })
         except Exception as e:
@@ -189,18 +204,21 @@ if not df_porto.empty:
     st.dataframe(df_results, use_container_width=True)
     
     st.divider()
-    st.subheader("💰 Ringkasan Keseluruhan")
+    st.subheader("💰 Ringkasan Kinerja Keseluruhan")
     c1, c2, c3 = st.columns(3)
     
     total_gain_all = total_value_all - total_modal_all
     total_gain_pct_all = (total_gain_all / total_modal_all * 100) if total_modal_all > 0 else 0
+    total_return_real = total_gain_all + total_div_cair_all
+    total_return_pct = (total_return_real / total_modal_all * 100) if total_modal_all > 0 else 0
     
-    c1.metric("Total Modal", f"Rp {total_modal_all:,.0f}")
-    c2.metric("Total Nilai Portofolio", f"Rp {total_value_all:,.0f}")
-    c3.metric("Total Capital Gain", f"Rp {total_gain_all:,.0f}", f"{total_gain_pct_all:.2f}%")
+    c1.metric("Total Modal Diinvestasikan", f"Rp {total_modal_all:,.0f}")
+    c2.metric("Nilai Portofolio Saat Ini", f"Rp {total_value_all:,.0f}")
+    c3.metric("Capital Gain / Loss", f"Rp {total_gain_all:,.0f}", f"{total_gain_pct_all:.2f}%")
     
-    c4, c5 = st.columns(2)
-    c4.metric("Total Potensi Dividen", f"Rp {total_div_all:,.0f}")
-    c5.metric("Total Return (Gain + Div)", f"Rp {(total_gain_all + total_div_all):,.0f}")
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Total Riwayat Dividen Cair", f"Rp {total_div_cair_all:,.0f}")
+    c5.metric("Total Return (Gain + Realisasi Div)", f"Rp {total_return_real:,.0f}", f"{total_return_pct:.2f}%")
+    c6.metric("Potensi Dividen Mendatang", f"Rp {total_div_potensi_all:,.0f}")
 else:
     st.info("Portofolio masih kosong di Google Sheets. Silakan gunakan menu di samping untuk menambah saham.")
