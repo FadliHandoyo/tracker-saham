@@ -5,9 +5,10 @@ import gspread
 from google.oauth2.service_account import Credentials
 import datetime
 import pytz
+import plotly.express as px
 
-st.set_page_config(page_title="Tracker Saham Otomatis", layout="wide")
-st.title("📊 Portofolio Saham Live")
+st.set_page_config(page_title="Tracker Saham & Analitik", layout="wide")
+st.title("📊 Portofolio & Analitik Saham")
 
 tz_wib = pytz.timezone('Asia/Jakarta')
 list_bulan = ["-", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
@@ -25,200 +26,187 @@ try:
     gc = get_gspread_client()
     sheet_url = st.secrets["gsheets"]["spreadsheet_url"]
     sh = gc.open_by_url(sheet_url)
-    worksheet = sh.get_worksheet(0)
+    ws_porto = sh.worksheet("Portofolio")
+    ws_sejarah = sh.worksheet("Sejarah")
 except Exception as e:
-    st.error(f"Gagal terhubung ke Google Sheets. Error: {e}")
+    st.error(f"Gagal terhubung ke Google Sheets. Pastikan nama sheet adalah 'Portofolio' dan 'Sejarah'. Error: {e}")
     st.stop()
 
-def load_data():
-    records = worksheet.get_all_records()
-    if not records:
-        return pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Bulan Dividen", "Tahun Dividen", "Total Dividen Cair", "Terakhir Update"])
-    
-    df = pd.DataFrame(records)
-    
-    # Pengaman jika kolom baru belum terbaca sempurna
-    if "Total Dividen Cair" not in df.columns:
-        df["Total Dividen Cair"] = 0.0
-        
-    df["Avg Price"] = pd.to_numeric(df["Avg Price"], errors='coerce').fillna(0).astype(float)
-    df["Lot"] = pd.to_numeric(df["Lot"], errors='coerce').fillna(0).astype(int)
-    df["Dividen/Lembar"] = pd.to_numeric(df["Dividen/Lembar"], errors='coerce').fillna(0).astype(float)
-    df["Total Dividen Cair"] = pd.to_numeric(df["Total Dividen Cair"], errors='coerce').fillna(0).astype(float)
-    
-    df["Bulan Dividen"] = df["Bulan Dividen"].astype(str).replace("", "-").replace("0", "-")
-    df["Tahun Dividen"] = df["Tahun Dividen"].astype(str).replace("", "-").replace("0", "-")
+def load_porto():
+    records = ws_porto.get_all_records()
+    df = pd.DataFrame(records) if records else pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Bulan Dividen", "Tahun Dividen", "Total Dividen Cair", "Terakhir Update"])
+    if not df.empty:
+        if "Total Dividen Cair" not in df.columns:
+            df["Total Dividen Cair"] = 0.0
+        for col in ["Avg Price", "Dividen/Lembar", "Total Dividen Cair"]:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(float)
+        df["Lot"] = pd.to_numeric(df["Lot"], errors='coerce').fillna(0).astype(int)
+        for col in ["Bulan Dividen", "Tahun Dividen"]:
+            df[col] = df[col].astype(str).replace("", "-").replace("0", "-")
     return df
 
-def save_data(df):
-    worksheet.clear()
-    data_to_save = [df.columns.values.tolist()] + df.values.tolist()
-    worksheet.update(data_to_save)
+def load_sejarah():
+    records = ws_sejarah.get_all_records()
+    return pd.DataFrame(records) if records else pd.DataFrame(columns=["Waktu", "Kode", "Jenis", "Nominal (Rp)", "Keterangan"])
 
-df_porto = load_data()
+def save_porto(df):
+    ws_porto.clear()
+    ws_porto.update([df.columns.values.tolist()] + df.values.tolist())
+
+def save_sejarah(df):
+    ws_sejarah.clear()
+    ws_sejarah.update([df.columns.values.tolist()] + df.values.tolist())
+
+df_porto = load_porto()
+df_sejarah = load_sejarah()
 
 # --- SIDEBAR: KONTROL PANEL ---
 st.sidebar.header("⚙️ Kelola Portofolio")
-menu = st.sidebar.radio("Pilih Aksi:", ["➕ Tambah Baru", "✏️ Edit Saham", "🗑️ Hapus Saham"])
-
+menu = st.sidebar.radio("Pilih Aksi:", ["➕ Tambah Baru", "✏️ Edit Saham", "💰 Cairkan Dividen", "🗑️ Hapus Saham"])
 st.sidebar.divider()
 
 if menu == "➕ Tambah Baru":
-    st.sidebar.subheader("Input Saham Baru")
-    ticker = st.sidebar.text_input("Kode Saham (contoh: BBCA.JK)").upper()
-    avg_price = st.sidebar.number_input("Harga Rata-rata (Avg Price) Rp", min_value=0.0, step=50.0)
+    ticker = st.sidebar.text_input("Kode Saham").upper()
+    avg_price = st.sidebar.number_input("Avg Price (Rp)", min_value=0.0, step=50.0)
     lots = st.sidebar.number_input("Jumlah Lot", min_value=0, step=1)
-    
-    st.sidebar.markdown("**Info Dividen Mendatang**")
-    div = st.sidebar.number_input("Dividen per Lembar (Rp)", min_value=0.0, step=10.0)
-    div_month = st.sidebar.selectbox("Bulan Pembagian", list_bulan)
-    div_year = st.sidebar.text_input("Tahun Pembagian (contoh: 2026)", value="-")
-    
-    st.sidebar.markdown("**Riwayat Dividen Masa Lalu**")
-    tot_cair = st.sidebar.number_input("Total Dividen Sudah Cair (Rp)", min_value=0.0, step=1000.0)
-
     if st.sidebar.button("Simpan Saham Baru"):
         if ticker:
-            if not df_porto.empty and ticker in df_porto["Kode"].values:
-                st.sidebar.error(f"Saham {ticker} sudah ada! Silakan gunakan menu 'Edit Saham'.")
-            else:
-                waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
-                new_data = {
-                    "Kode": ticker, 
-                    "Avg Price": avg_price, 
-                    "Lot": lots, 
-                    "Dividen/Lembar": div, 
-                    "Bulan Dividen": div_month,
-                    "Tahun Dividen": div_year,
-                    "Total Dividen Cair": tot_cair,
-                    "Terakhir Update": waktu_sekarang
-                }
-                df_porto = pd.concat([df_porto, pd.DataFrame([new_data])], ignore_index=True)
-                save_data(df_porto)
-                st.sidebar.success(f"{ticker} berhasil ditambahkan!")
-                st.rerun()
+            waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
+            new_porto = {"Kode": ticker, "Avg Price": avg_price, "Lot": lots, "Dividen/Lembar": 0, "Bulan Dividen": "-", "Tahun Dividen": "-", "Total Dividen Cair": 0, "Terakhir Update": waktu_sekarang}
+            new_log = {"Waktu": waktu_sekarang, "Kode": ticker, "Jenis": "Beli", "Nominal (Rp)": avg_price * (lots * 100), "Keterangan": "Beli Awal"}
+            
+            df_porto = pd.concat([df_porto, pd.DataFrame([new_porto])], ignore_index=True)
+            df_sejarah = pd.concat([df_sejarah, pd.DataFrame([new_log])], ignore_index=True)
+            save_porto(df_porto)
+            save_sejarah(df_sejarah)
+            st.rerun()
 
 elif menu == "✏️ Edit Saham":
-    st.sidebar.subheader("Update Saham Exist")
     if not df_porto.empty:
         saham_pilihan = st.sidebar.selectbox("Pilih Saham", df_porto["Kode"].values)
         current_data = df_porto[df_porto["Kode"] == saham_pilihan].iloc[0]
-        
         new_avg = st.sidebar.number_input("Update Avg Price (Rp)", value=float(current_data["Avg Price"]), step=50.0)
         new_lot = st.sidebar.number_input("Update Jumlah Lot", value=int(current_data["Lot"]), step=1)
         
-        st.sidebar.markdown("**Update Dividen Mendatang**")
-        new_div = st.sidebar.number_input("Update Dividen (Rp)", value=float(current_data["Dividen/Lembar"]), step=10.0)
+        st.sidebar.markdown("**Input Jadwal Dividen Mendatang**")
+        new_div = st.sidebar.number_input("Dividen per Lembar (Rp)", value=float(current_data["Dividen/Lembar"]), step=10.0)
         old_month = str(current_data["Bulan Dividen"])
         idx_month = list_bulan.index(old_month) if old_month in list_bulan else 0
-        new_month = st.sidebar.selectbox("Update Bulan Pembagian", list_bulan, index=idx_month)
-        new_year = st.sidebar.text_input("Update Tahun Pembagian", value=str(current_data["Tahun Dividen"]))
-        
-        st.sidebar.markdown("**Update Riwayat Dividen**")
-        new_tot_cair = st.sidebar.number_input("Akumulasi Dividen Sudah Cair (Rp)", value=float(current_data.get("Total Dividen Cair", 0.0)), step=1000.0)
+        new_month = st.sidebar.selectbox("Bulan Pembagian", list_bulan, index=idx_month)
+        new_year = st.sidebar.text_input("Tahun Pembagian", value=str(current_data["Tahun Dividen"]))
         
         if st.sidebar.button("Update Data"):
             waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
             idx = df_porto.index[df_porto["Kode"] == saham_pilihan][0]
-            
             df_porto.at[idx, "Avg Price"] = new_avg
             df_porto.at[idx, "Lot"] = new_lot
             df_porto.at[idx, "Dividen/Lembar"] = new_div
             df_porto.at[idx, "Bulan Dividen"] = new_month
             df_porto.at[idx, "Tahun Dividen"] = new_year
-            df_porto.at[idx, "Total Dividen Cair"] = new_tot_cair
             df_porto.at[idx, "Terakhir Update"] = waktu_sekarang
             
-            save_data(df_porto)
-            st.sidebar.success(f"Data {saham_pilihan} berhasil diupdate!")
+            new_log = {"Waktu": waktu_sekarang, "Kode": saham_pilihan, "Jenis": "Update", "Nominal (Rp)": new_avg * (new_lot * 100), "Keterangan": "Update Lot/Harga/Jadwal"}
+            df_sejarah = pd.concat([df_sejarah, pd.DataFrame([new_log])], ignore_index=True)
+            save_porto(df_porto)
+            save_sejarah(df_sejarah)
             st.rerun()
-    else:
-        st.sidebar.info("Portofolio kosong. Tambahkan saham terlebih dahulu.")
+
+elif menu == "💰 Cairkan Dividen":
+    if not df_porto.empty:
+        saham_pilihan = st.sidebar.selectbox("Pilih Saham yg Bagi Dividen", df_porto["Kode"].values)
+        nominal_cair = st.sidebar.number_input("Total Rupiah Masuk Rekening (Rp)", min_value=0.0, step=1000.0)
+        
+        if st.sidebar.button("Catat Dividen Cair!"):
+            waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
+            idx = df_porto.index[df_porto["Kode"] == saham_pilihan][0]
+            
+            # Tambah ke total cair, reset jadwal dividen ke 0
+            df_porto.at[idx, "Total Dividen Cair"] += nominal_cair
+            df_porto.at[idx, "Dividen/Lembar"] = 0
+            df_porto.at[idx, "Bulan Dividen"] = "-"
+            df_porto.at[idx, "Tahun Dividen"] = "-"
+            df_porto.at[idx, "Terakhir Update"] = waktu_sekarang
+            
+            new_log = {"Waktu": waktu_sekarang, "Kode": saham_pilihan, "Jenis": "Dividen", "Nominal (Rp)": nominal_cair, "Keterangan": "Dividen Cair Masuk"}
+            df_sejarah = pd.concat([df_sejarah, pd.DataFrame([new_log])], ignore_index=True)
+            save_porto(df_porto)
+            save_sejarah(df_sejarah)
+            st.rerun()
 
 elif menu == "🗑️ Hapus Saham":
-    st.sidebar.subheader("Hapus Data Saham")
     if not df_porto.empty:
-        saham_to_delete = st.sidebar.selectbox("Pilih saham yang mau dihapus", df_porto["Kode"].values)
+        saham_to_delete = st.sidebar.selectbox("Pilih saham", df_porto["Kode"].values)
         if st.sidebar.button("Hapus Permanen", type="primary"):
             df_porto = df_porto[df_porto["Kode"] != saham_to_delete]
-            save_data(df_porto)
-            st.sidebar.success(f"{saham_to_delete} berhasil dihapus!")
+            save_porto(df_porto)
             st.rerun()
-    else:
-        st.sidebar.info("Portofolio sudah kosong.")
 
-# --- MAIN PAGE: KALKULASI & TAMPILAN LIVE ---
-if not df_porto.empty:
-    st.subheader("Rincian Portofolio Saat Ini")
-    
-    results = []
-    total_modal_all = 0
-    total_value_all = 0
-    total_div_potensi_all = 0
-    total_div_cair_all = 0
-    
-    for index, row in df_porto.iterrows():
-        tkr = row["Kode"]
-        avg = row["Avg Price"]
-        lot = row["Lot"]
-        dps = row["Dividen/Lembar"]
-        b_div = row["Bulan Dividen"]
-        t_div = row["Tahun Dividen"]
-        tot_cair_saham = row.get("Total Dividen Cair", 0.0)
-        terakhir_update = row.get("Terakhir Update", "-")
+# --- MAIN PAGE: TABS ---
+tab1, tab2 = st.tabs(["📊 Live Portofolio", "📈 Analitik & Buku Sejarah"])
+
+with tab1:
+    if not df_porto.empty:
+        results = []
+        total_modal_all = total_value_all = total_div_potensi_all = total_div_cair_all = 0
         
-        try:
-            stock = yf.Ticker(tkr)
-            live_price = stock.history(period="1d")['Close'].iloc[-1]
+        for index, row in df_porto.iterrows():
+            tkr, avg, lot, dps, b_div, t_div, tot_cair = row["Kode"], row["Avg Price"], row["Lot"], row["Dividen/Lembar"], row["Bulan Dividen"], row["Tahun Dividen"], row.get("Total Dividen Cair", 0.0)
+            try:
+                live_price = yf.Ticker(tkr).history(period="1d")['Close'].iloc[-1]
+                lembar = lot * 100
+                modal, nilai_sekarang = avg * lembar, live_price * lembar
+                gain = nilai_sekarang - modal
+                gain_pct = (gain / modal * 100) if modal > 0 else 0
+                tot_div_potensi = dps * lembar
+                
+                total_modal_all += modal
+                total_value_all += nilai_sekarang
+                total_div_potensi_all += tot_div_potensi
+                total_div_cair_all += tot_cair
+                jadwal_div = f"{b_div} {t_div}" if b_div != "-" and t_div != "-" else "-"
+                
+                results.append({
+                    "Emiten": tkr.replace(".JK", ""), "Lot": lot, "Avg Price": f"Rp {avg:,.0f}",
+                    "Harga Live": f"Rp {live_price:,.0f}", "Modal": f"Rp {modal:,.0f}",
+                    "Nilai Saat Ini": f"Rp {nilai_sekarang:,.0f}", "Capital Gain": f"Rp {gain:,.0f} ({gain_pct:.2f}%)",
+                    "Riwayat Dividen Cair": f"Rp {tot_cair:,.0f}", "Potensi Dividen": f"Rp {tot_div_potensi:,.0f} ({jadwal_div})"
+                })
+            except Exception as e:
+                pass
+                
+        st.dataframe(pd.DataFrame(results), use_container_width=True)
+        st.divider()
+        st.subheader("💰 Ringkasan Kinerja Keseluruhan")
+        c1, c2, c3 = st.columns(3)
+        total_gain_all = total_value_all - total_modal_all
+        total_return_real = total_gain_all + total_div_cair_all
+        
+        c1.metric("Total Modal", f"Rp {total_modal_all:,.0f}")
+        c2.metric("Nilai Portofolio", f"Rp {total_value_all:,.0f}")
+        c3.metric("Capital Gain", f"Rp {total_gain_all:,.0f}")
+        
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Total Dividen Sudah Cair", f"Rp {total_div_cair_all:,.0f}")
+        c5.metric("Total Return (Gain + Div)", f"Rp {total_return_real:,.0f}")
+        c6.metric("Potensi Dividen Mendatang", f"Rp {total_div_potensi_all:,.0f}")
+    else:
+        st.info("Portofolio masih kosong.")
+
+with tab2:
+    st.subheader("📈 Pertumbuhan Dividen")
+    if not df_sejarah.empty:
+        # Filter hanya transaksi yang jenisnya Dividen
+        df_div = df_sejarah[df_sejarah["Jenis"] == "Dividen"]
+        if not df_div.empty:
+            df_div["Nominal (Rp)"] = pd.to_numeric(df_div["Nominal (Rp)"], errors='coerce').fillna(0)
+            # Buat Bar Chart menggunakan Plotly
+            fig = px.bar(df_div, x="Waktu", y="Nominal (Rp)", color="Kode", title="Histori Dividen Cair per Saham", text_auto='.2s')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Belum ada data dividen cair yang tercatat untuk dibuatkan grafik.")
             
-            lembar = lot * 100
-            modal = avg * lembar
-            nilai_sekarang = live_price * lembar
-            gain = nilai_sekarang - modal
-            gain_pct = (gain / modal * 100) if modal > 0 else 0
-            tot_div_potensi = dps * lembar
-            
-            total_modal_all += modal
-            total_value_all += nilai_sekarang
-            total_div_potensi_all += tot_div_potensi
-            total_div_cair_all += tot_cair_saham
-            
-            jadwal_div = f"{b_div} {t_div}" if b_div != "-" and t_div != "-" else "-"
-            
-            results.append({
-                "Emiten": tkr.replace(".JK", ""),
-                "Lot": lot,
-                "Avg Price": f"Rp {avg:,.0f}",
-                "Harga Live": f"Rp {live_price:,.0f}",
-                "Modal": f"Rp {modal:,.0f}",
-                "Nilai Saat Ini": f"Rp {nilai_sekarang:,.0f}",
-                "Capital Gain": f"Rp {gain:,.0f} ({gain_pct:.2f}%)",
-                "Riwayat Dividen Cair": f"Rp {tot_cair_saham:,.0f}",
-                "Potensi Dividen (Jadwal)": f"Rp {tot_div_potensi:,.0f} ({jadwal_div})",
-                "Terakhir Update": terakhir_update
-            })
-        except Exception as e:
-            st.error(f"Gagal menarik data live untuk {tkr}.")
-            
-    df_results = pd.DataFrame(results)
-    st.dataframe(df_results, use_container_width=True)
-    
-    st.divider()
-    st.subheader("💰 Ringkasan Kinerja Keseluruhan")
-    c1, c2, c3 = st.columns(3)
-    
-    total_gain_all = total_value_all - total_modal_all
-    total_gain_pct_all = (total_gain_all / total_modal_all * 100) if total_modal_all > 0 else 0
-    total_return_real = total_gain_all + total_div_cair_all
-    total_return_pct = (total_return_real / total_modal_all * 100) if total_modal_all > 0 else 0
-    
-    c1.metric("Total Modal Diinvestasikan", f"Rp {total_modal_all:,.0f}")
-    c2.metric("Nilai Portofolio Saat Ini", f"Rp {total_value_all:,.0f}")
-    c3.metric("Capital Gain / Loss", f"Rp {total_gain_all:,.0f}", f"{total_gain_pct_all:.2f}%")
-    
-    c4, c5, c6 = st.columns(3)
-    c4.metric("Total Riwayat Dividen Cair", f"Rp {total_div_cair_all:,.0f}")
-    c5.metric("Total Return (Gain + Realisasi Div)", f"Rp {total_return_real:,.0f}", f"{total_return_pct:.2f}%")
-    c6.metric("Potensi Dividen Mendatang", f"Rp {total_div_potensi_all:,.0f}")
-else:
-    st.info("Portofolio masih kosong di Google Sheets. Silakan gunakan menu di samping untuk menambah saham.")
+        st.divider()
+        st.subheader("📒 Buku Sejarah (Ledger)")
+        st.dataframe(df_sejarah, use_container_width=True)
+    else:
+        st.info("Buku sejarah masih kosong. Setiap transaksi dan dividen akan otomatis terekam di sini.")
