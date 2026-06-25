@@ -11,6 +11,7 @@ st.title("📊 Portofolio Saham Live")
 
 # Zona waktu Indonesia Barat (WIB)
 tz_wib = pytz.timezone('Asia/Jakarta')
+list_bulan = ["-", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
 
 @st.cache_resource
 def get_gspread_client():
@@ -33,15 +34,14 @@ except Exception as e:
 def load_data():
     records = worksheet.get_all_records()
     if not records:
-        return pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Terakhir Update"])
+        return pd.DataFrame(columns=["Kode", "Avg Price", "Lot", "Dividen/Lembar", "Bulan Dividen", "Tahun Dividen", "Terakhir Update"])
     
     df = pd.DataFrame(records)
-    
-    # Memaksa format kolom angka agar konsisten dan mencegah TypeError
     df["Avg Price"] = pd.to_numeric(df["Avg Price"], errors='coerce').fillna(0).astype(float)
     df["Lot"] = pd.to_numeric(df["Lot"], errors='coerce').fillna(0).astype(int)
     df["Dividen/Lembar"] = pd.to_numeric(df["Dividen/Lembar"], errors='coerce').fillna(0).astype(float)
-    
+    df["Bulan Dividen"] = df["Bulan Dividen"].astype(str).replace("", "-").replace("0", "-")
+    df["Tahun Dividen"] = df["Tahun Dividen"].astype(str).replace("", "-").replace("0", "-")
     return df
 
 def save_data(df):
@@ -62,7 +62,11 @@ if menu == "➕ Tambah Baru":
     ticker = st.sidebar.text_input("Kode Saham (contoh: BBCA.JK)").upper()
     avg_price = st.sidebar.number_input("Harga Rata-rata (Avg Price) Rp", min_value=0.0, step=50.0)
     lots = st.sidebar.number_input("Jumlah Lot", min_value=0, step=1)
+    
+    st.sidebar.markdown("**Info Dividen (Isi 0 jika belum ada)**")
     div = st.sidebar.number_input("Dividen per Lembar (Rp)", min_value=0.0, step=10.0)
+    div_month = st.sidebar.selectbox("Bulan Pembagian", list_bulan)
+    div_year = st.sidebar.text_input("Tahun Pembagian (contoh: 2026)", value="-")
 
     if st.sidebar.button("Simpan Saham Baru"):
         if ticker:
@@ -70,7 +74,15 @@ if menu == "➕ Tambah Baru":
                 st.sidebar.error(f"Saham {ticker} sudah ada! Silakan gunakan menu 'Edit Saham'.")
             else:
                 waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
-                new_data = {"Kode": ticker, "Avg Price": avg_price, "Lot": lots, "Dividen/Lembar": div, "Terakhir Update": waktu_sekarang}
+                new_data = {
+                    "Kode": ticker, 
+                    "Avg Price": avg_price, 
+                    "Lot": lots, 
+                    "Dividen/Lembar": div, 
+                    "Bulan Dividen": div_month,
+                    "Tahun Dividen": div_year,
+                    "Terakhir Update": waktu_sekarang
+                }
                 df_porto = pd.concat([df_porto, pd.DataFrame([new_data])], ignore_index=True)
                 save_data(df_porto)
                 st.sidebar.success(f"{ticker} berhasil ditambahkan!")
@@ -80,13 +92,18 @@ elif menu == "✏️ Edit Saham":
     st.sidebar.subheader("Update Saham Exist")
     if not df_porto.empty:
         saham_pilihan = st.sidebar.selectbox("Pilih Saham", df_porto["Kode"].values)
-        
-        # Tarik data saat ini sebagai nilai default di form
         current_data = df_porto[df_porto["Kode"] == saham_pilihan].iloc[0]
         
         new_avg = st.sidebar.number_input("Update Avg Price (Rp)", value=float(current_data["Avg Price"]), step=50.0)
         new_lot = st.sidebar.number_input("Update Jumlah Lot", value=int(current_data["Lot"]), step=1)
+        
+        st.sidebar.markdown("**Update Info Dividen**")
         new_div = st.sidebar.number_input("Update Dividen (Rp)", value=float(current_data["Dividen/Lembar"]), step=10.0)
+        
+        old_month = str(current_data["Bulan Dividen"])
+        idx_month = list_bulan.index(old_month) if old_month in list_bulan else 0
+        new_month = st.sidebar.selectbox("Update Bulan Pembagian", list_bulan, index=idx_month)
+        new_year = st.sidebar.text_input("Update Tahun Pembagian", value=str(current_data["Tahun Dividen"]))
         
         if st.sidebar.button("Update Data"):
             waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
@@ -95,6 +112,8 @@ elif menu == "✏️ Edit Saham":
             df_porto.at[idx, "Avg Price"] = new_avg
             df_porto.at[idx, "Lot"] = new_lot
             df_porto.at[idx, "Dividen/Lembar"] = new_div
+            df_porto.at[idx, "Bulan Dividen"] = new_month
+            df_porto.at[idx, "Tahun Dividen"] = new_year
             df_porto.at[idx, "Terakhir Update"] = waktu_sekarang
             
             save_data(df_porto)
@@ -129,6 +148,8 @@ if not df_porto.empty:
         avg = row["Avg Price"]
         lot = row["Lot"]
         dps = row["Dividen/Lembar"]
+        b_div = row["Bulan Dividen"]
+        t_div = row["Tahun Dividen"]
         terakhir_update = row.get("Terakhir Update", "-")
         
         try:
@@ -146,6 +167,9 @@ if not df_porto.empty:
             total_value_all += nilai_sekarang
             total_div_all += tot_div
             
+            # Penggabungan bulan dan tahun untuk kolom jadwal
+            jadwal_div = f"{b_div} {t_div}" if b_div != "-" and t_div != "-" else "-"
+            
             results.append({
                 "Emiten": tkr.replace(".JK", ""),
                 "Lot": lot,
@@ -155,6 +179,7 @@ if not df_porto.empty:
                 "Nilai Saat Ini": f"Rp {nilai_sekarang:,.0f}",
                 "Capital Gain": f"Rp {gain:,.0f} ({gain_pct:.2f}%)",
                 "Potensi Dividen": f"Rp {tot_div:,.0f}",
+                "Jadwal Dividen": jadwal_div,
                 "Terakhir Update": terakhir_update
             })
         except Exception as e:
