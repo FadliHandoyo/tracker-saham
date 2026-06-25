@@ -6,6 +6,7 @@ from google.oauth2.service_account import Credentials
 import datetime
 import pytz
 import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Tracker Saham & Analitik", layout="wide")
 st.title("📊 Portofolio & Analitik Saham")
@@ -120,7 +121,6 @@ elif menu == "💰 Cairkan Dividen":
             waktu_sekarang = datetime.datetime.now(tz_wib).strftime("%Y-%m-%d %H:%M:%S")
             idx = df_porto.index[df_porto["Kode"] == saham_pilihan][0]
             
-            # Tambah ke total cair, reset jadwal dividen ke 0
             df_porto.at[idx, "Total Dividen Cair"] += nominal_cair
             df_porto.at[idx, "Dividen/Lembar"] = 0
             df_porto.at[idx, "Bulan Dividen"] = "-"
@@ -141,40 +141,56 @@ elif menu == "🗑️ Hapus Saham":
             save_porto(df_porto)
             st.rerun()
 
+# --- PENGAMBILAN DATA LIVE (Global agar bisa dipakai di kedua Tab) ---
+results_tabel = []
+results_grafik = []
+
+total_modal_all = total_value_all = total_div_potensi_all = total_div_cair_all = 0
+
+if not df_porto.empty:
+    for index, row in df_porto.iterrows():
+        tkr, avg, lot = row["Kode"], row["Avg Price"], row["Lot"]
+        dps, b_div, t_div = row["Dividen/Lembar"], row["Bulan Dividen"], row["Tahun Dividen"]
+        tot_cair = row.get("Total Dividen Cair", 0.0)
+        try:
+            live_price = yf.Ticker(tkr).history(period="1d")['Close'].iloc[-1]
+            lembar = lot * 100
+            modal, nilai_sekarang = avg * lembar, live_price * lembar
+            gain = nilai_sekarang - modal
+            gain_pct = (gain / modal * 100) if modal > 0 else 0
+            tot_div_potensi = dps * lembar
+            total_return_saham = gain + tot_cair
+            
+            total_modal_all += modal
+            total_value_all += nilai_sekarang
+            total_div_potensi_all += tot_div_potensi
+            total_div_cair_all += tot_cair
+            jadwal_div = f"{b_div} {t_div}" if b_div != "-" and t_div != "-" else "-"
+            
+            # Data untuk tabel (format Rupiah)
+            results_tabel.append({
+                "Emiten": tkr.replace(".JK", ""), "Lot": lot, "Avg Price": f"Rp {avg:,.0f}",
+                "Harga Live": f"Rp {live_price:,.0f}", "Modal": f"Rp {modal:,.0f}",
+                "Nilai Saat Ini": f"Rp {nilai_sekarang:,.0f}", "Capital Gain": f"Rp {gain:,.0f} ({gain_pct:.2f}%)",
+                "Riwayat Dividen Cair": f"Rp {tot_cair:,.0f}", "Potensi Dividen": f"Rp {tot_div_potensi:,.0f} ({jadwal_div})"
+            })
+            
+            # Data untuk grafik (format Angka murni)
+            results_grafik.append({
+                "Emiten": tkr.replace(".JK", ""),
+                "Capital Gain": gain,
+                "Dividen Cair": tot_cair,
+                "Total Return": total_return_saham
+            })
+        except Exception as e:
+            pass
+
 # --- MAIN PAGE: TABS ---
 tab1, tab2 = st.tabs(["📊 Live Portofolio", "📈 Analitik & Buku Sejarah"])
 
 with tab1:
-    if not df_porto.empty:
-        results = []
-        total_modal_all = total_value_all = total_div_potensi_all = total_div_cair_all = 0
-        
-        for index, row in df_porto.iterrows():
-            tkr, avg, lot, dps, b_div, t_div, tot_cair = row["Kode"], row["Avg Price"], row["Lot"], row["Dividen/Lembar"], row["Bulan Dividen"], row["Tahun Dividen"], row.get("Total Dividen Cair", 0.0)
-            try:
-                live_price = yf.Ticker(tkr).history(period="1d")['Close'].iloc[-1]
-                lembar = lot * 100
-                modal, nilai_sekarang = avg * lembar, live_price * lembar
-                gain = nilai_sekarang - modal
-                gain_pct = (gain / modal * 100) if modal > 0 else 0
-                tot_div_potensi = dps * lembar
-                
-                total_modal_all += modal
-                total_value_all += nilai_sekarang
-                total_div_potensi_all += tot_div_potensi
-                total_div_cair_all += tot_cair
-                jadwal_div = f"{b_div} {t_div}" if b_div != "-" and t_div != "-" else "-"
-                
-                results.append({
-                    "Emiten": tkr.replace(".JK", ""), "Lot": lot, "Avg Price": f"Rp {avg:,.0f}",
-                    "Harga Live": f"Rp {live_price:,.0f}", "Modal": f"Rp {modal:,.0f}",
-                    "Nilai Saat Ini": f"Rp {nilai_sekarang:,.0f}", "Capital Gain": f"Rp {gain:,.0f} ({gain_pct:.2f}%)",
-                    "Riwayat Dividen Cair": f"Rp {tot_cair:,.0f}", "Potensi Dividen": f"Rp {tot_div_potensi:,.0f} ({jadwal_div})"
-                })
-            except Exception as e:
-                pass
-                
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+    if results_tabel:
+        st.dataframe(pd.DataFrame(results_tabel), use_container_width=True)
         st.divider()
         st.subheader("💰 Ringkasan Kinerja Keseluruhan")
         c1, c2, c3 = st.columns(3)
@@ -190,23 +206,34 @@ with tab1:
         c5.metric("Total Return (Gain + Div)", f"Rp {total_return_real:,.0f}")
         c6.metric("Potensi Dividen Mendatang", f"Rp {total_div_potensi_all:,.0f}")
     else:
-        st.info("Portofolio masih kosong.")
+        st.info("Portofolio masih kosong atau sedang mengambil data pasar.")
 
 with tab2:
-    st.subheader("📈 Pertumbuhan Dividen")
-    if not df_sejarah.empty:
-        # Filter hanya transaksi yang jenisnya Dividen
-        df_div = df_sejarah[df_sejarah["Jenis"] == "Dividen"]
-        if not df_div.empty:
-            df_div["Nominal (Rp)"] = pd.to_numeric(df_div["Nominal (Rp)"], errors='coerce').fillna(0)
-            # Buat Bar Chart menggunakan Plotly
-            fig = px.bar(df_div, x="Waktu", y="Nominal (Rp)", color="Kode", title="Histori Dividen Cair per Saham", text_auto='.2s')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Belum ada data dividen cair yang tercatat untuk dibuatkan grafik.")
-            
+    if results_grafik:
+        df_chart = pd.DataFrame(results_grafik)
+        
+        st.subheader("📈 Kinerja Tiap Saham Saat Ini")
+        colA, colB = st.columns(2)
+        
+        # Grafik Capital Gain
+        fig_cg = px.bar(df_chart, x="Emiten", y="Capital Gain", color="Emiten", title="Capital Gain / Loss (Rp)", text_auto='.2s')
+        colA.plotly_chart(fig_cg, use_container_width=True)
+        
+        # Grafik Dividen Cair
+        fig_div = px.bar(df_chart, x="Emiten", y="Dividen Cair", color="Emiten", title="Dividen Sudah Cair (Rp)", text_auto='.2s')
+        colB.plotly_chart(fig_div, use_container_width=True)
+        
+        # Grafik Gabungan (Capital Gain + Dividen)
+        fig_total = px.bar(df_chart, x="Emiten", y="Total Return", color="Emiten", title="Total Return (Capital Gain + Dividen Cair)", text_auto='.2s')
+        st.plotly_chart(fig_total, use_container_width=True)
+        
         st.divider()
-        st.subheader("📒 Buku Sejarah (Ledger)")
+    else:
+        st.info("Belum ada data saham untuk dibuatkan grafik.")
+
+    # Bagian Sejarah
+    st.subheader("📒 Buku Sejarah (Ledger Transaksi & Dividen)")
+    if not df_sejarah.empty:
         st.dataframe(df_sejarah, use_container_width=True)
     else:
-        st.info("Buku sejarah masih kosong. Setiap transaksi dan dividen akan otomatis terekam di sini.")
+        st.info("Buku sejarah masih kosong. Setiap transaksi dan dividen akan otomatis terekam di sini ke depannya.")
